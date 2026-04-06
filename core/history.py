@@ -38,6 +38,12 @@ class HistoryManager:
         self.processed_ids.add(str(item_id))
         self._save_history()
 
+    def unmark_as_processed(self, item_id: str):
+        """Desmarca o histórico devolvendo o vídeo à prateleira em caso de erros."""
+        if str(item_id) in self.processed_ids:
+            self.processed_ids.remove(str(item_id))
+            self._save_history()
+
     def get_all_processed(self) -> List[str]:
         """Retorna todos os IDs processados."""
         return list(self.processed_ids)

@@ -46,8 +46,8 @@ class AutoTubeSystem:
             on_toggle_auto=self.toggle_auto,
             on_startup=self.on_bot_startup,
             on_list_channels=self.youtube_manager.list_channels,
-            on_list_project_shorts=self.real_api.get_shorts
-            # Callbacks adicionais são injetados pela pipeline.py
+            on_list_project_shorts=self.real_api.get_shorts,
+            on_get_schedule_state=lambda: getattr(self, 'pipeline').scheduler.state if hasattr(self, 'pipeline') else {}
         )
         self.pipeline = AutoTubePipeline(
             self.real_api, 
@@ -128,9 +128,29 @@ class AutoTubeSystem:
         except Exception as e:
             self.logger.error(f"Erro no job automático: {e}")
 
+    def check_pending_resume(self):
+        """Verifica periodicamente se há slots reagendados (ex: por falha de limite) que já podem ser retomados."""
+        if not self.bot_loop:
+            return
+            
+        pending = self.pipeline.scheduler.get_pending_slots()
+        if not pending or self.pipeline.is_scheduling or not self.pipeline.task_queue.queue.empty():
+            return
+            
+        from datetime import datetime
+        now = datetime.now().astimezone()
+        
+        # Se pelo menos 1 slot já estiver na hora de processar (agendado pro passado ou exato momento)
+        should_resume = any(datetime.fromisoformat(p['scheduled_time']) <= now for p in pending)
+        if should_resume:
+            self.logger.info("⏳ Slot atingiu horário de retomada automática. Reativando fila em background.")
+            asyncio.run_coroutine_threadsafe(self.pipeline.resume_scheduling(), self.bot_loop)
+
     def start_scheduler(self):
         """Inicia o agendador de tarefas."""
         schedule.every(self.settings.CRON_INTERVAL).minutes.do(self.run_auto_job)
+        schedule.every(15).minutes.do(self.check_pending_resume)
+        
         while True:
             schedule.run_pending()
             time.sleep(1)

@@ -60,6 +60,15 @@ class SchedulingManager:
         except Exception as e:
             self.logger.error(f"Erro ao persistir estado: {e}")
 
+    def log_alert(self, message: str):
+        self.state["alert"] = message
+        self._persist()
+
+    def clear_alert(self):
+        if "alert" in self.state:
+            self.state.pop("alert")
+            self._persist()
+
     def log_error(self, slot_index: int, scheduled_time: str, path: str, stage: str, error: str):
         with open(self.log_file, 'a', encoding='utf-8') as f:
             log_entry = (
@@ -123,6 +132,20 @@ class SchedulingManager:
                 break
                 
         return slots
+
+    @staticmethod
+    def get_next_rounded_time(from_dt: datetime, min_minutes_ahead: int = 60) -> datetime:
+        """
+        Retorna o próximo horário redondo (minutos 00 ou 30) 
+        pelo menos `min_minutes_ahead` no futuro.
+        """
+        target = from_dt + timedelta(minutes=min_minutes_ahead)
+        if target.minute == 0:
+            return target.replace(second=0, microsecond=0)
+        elif target.minute <= 30:
+            return target.replace(minute=30, second=0, microsecond=0)
+        else:
+            return (target + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
 
     def _create_slot_dict(self, index: int, scheduled_time: datetime) -> Dict:
         return {

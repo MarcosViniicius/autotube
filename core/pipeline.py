@@ -53,6 +53,9 @@ class AutoTubePipeline:
         else:
             report += "\n🤖 <b>Modo de Agendamento em Lote:</b> INATIVO\n"
 
+        if self.scheduler.state.get("alert"):
+            report += f"\n🚨 <b>ALERTA DO SISTEMA:</b>\n{self.scheduler.state['alert']}\n"
+
         if self.stats["last_video_url"]:
             report += f"\n📺 <b>Último vídeo:</b> {self.stats['last_video_url']}"
             
@@ -81,6 +84,7 @@ class AutoTubePipeline:
         profile_name = config.get('profile_name', 'viral')
         config['profile_name'] = profile_name
 
+        self.scheduler.clear_alert()
         self.task_queue.clear()
         
         slots = self.scheduler.generate_slots(days, posts_per_day, start_hour, interval_hours, custom_hours, use_template, start_date_offset)
@@ -106,9 +110,11 @@ class AutoTubePipeline:
         self.is_scheduling = False
         self.task_queue.clear()
         self.scheduler.clear_state()
+        self.scheduler.clear_alert()
         await self.telegram_bot.send_notification("🛑 **Operação Cancelada!**\nA fila atual foi abortada instantaneamente e a memória foi limpa.")
 
     async def resume_scheduling(self):
+        self.scheduler.clear_alert()
         slots = self.scheduler.get_pending_slots()
         if not slots:
             await self.telegram_bot.send_notification("ℹ️ Não há agendamentos pendentes para retomar.")
@@ -320,8 +326,9 @@ class AutoTubePipeline:
                 # Checa The past date bounds
                 scheduled_dt = datetime.fromisoformat(publish_time)
                 # Ambos devem ser aware (com timezone) para comparação
-                if scheduled_dt < datetime.now().astimezone() + timedelta(minutes=60):
-                    scheduled_dt = datetime.now().astimezone() + timedelta(minutes=65)
+                now_dt = datetime.now().astimezone()
+                if scheduled_dt < now_dt + timedelta(minutes=60):
+                    scheduled_dt = self.scheduler.get_next_rounded_time(now_dt, min_minutes_ahead=60)
                     publish_time = scheduled_dt.isoformat()
                     # Persiste o novo horário corrigido no JSON para não ficar "zumbi"
                     self.scheduler.update_slot(slot_idx, {"scheduled_time": publish_time})
@@ -372,10 +379,12 @@ class AutoTubePipeline:
                 
                 if "YouTubeQuotaError" in str(e):
                     await self.telegram_bot.send_notification("🚨 Limite Diário (Cota) do YouTube atingido! A fila reagendou os pendentes.")
+                    self.scheduler.log_alert("A Cota Diária do YouTube foi atingida e pausou seus envios temporariamente. Os slots de tempo prejudicados foram empurrados para o dia seguinte e aguardam retomada.")
                     self.scheduler.reschedule_pending_slots()
             else:
+                self.history.unmark_as_processed(short_id)
                 self.logger.error(f"Erro em publicação manual ({short_id}): {e}")
-                await self.telegram_bot.send_notification(f"❌ Erro na submissão de {short_id} para {channel_name}:\n{e}")
+                await self.telegram_bot.send_notification(f"❌ Erro na submissão de {short_id} para {channel_name}:\n{e}\n\n👉 O histórico foi desfeito, você poderá enviar este corte novamente.")
         finally:
             # 6. GC: Limpeza do Disco Seguro
             if video_path and os.path.exists(video_path):

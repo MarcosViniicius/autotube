@@ -6,10 +6,23 @@ import asyncio
 from typing import Callable, List, Dict
 from datetime import datetime, timedelta
 
+
+
+# ─────────────────────────────────────────────
+#  HELPERS DE MENU
+# ─────────────────────────────────────────────
+
+def _menu(icon: str, title: str, body: str) -> str:
+    """Monta o cabeçalho padrão de todos os menus."""
+    return f"{icon} <b>{title}</b>\n\n{body}"
+
+
+BTN_CANCEL = [InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")]
+
 class AutoTubeBot:
-    def __init__(self, token: str, chat_id: str, 
-                 on_list_projects: Callable = None, 
-                 on_approve_project: Callable = None, 
+    def __init__(self, token: str, chat_id: str,
+                 on_list_projects: Callable = None,
+                 on_approve_project: Callable = None,
                  on_toggle_auto: Callable = None,
                  on_get_status: Callable = None,
                  on_start_scheduling: Callable = None,
@@ -18,8 +31,9 @@ class AutoTubeBot:
                  on_startup: Callable = None,
                  on_list_channels: Callable = None,
                  on_list_project_shorts: Callable = None,
+                 on_get_schedule_state: Callable = None,
                  on_skip_short: Callable = None):
-        
+
         self.token = token
         self.chat_id = chat_id
         self.on_list_projects = on_list_projects
@@ -33,58 +47,106 @@ class AutoTubeBot:
         self.on_startup = on_startup
         self.on_list_channels = on_list_channels or (lambda: ["default"])
         self.on_list_project_shorts = on_list_project_shorts
-        
+        self.on_get_schedule_state = on_get_schedule_state
+
         self.logger = logging.getLogger("AutoTubeBot")
         self.user_data = {}
-        
+
         self.app = ApplicationBuilder().token(self.token).post_init(self._post_init).build()
         self._setup_handlers()
 
     async def _post_init(self, application):
         if self.on_startup:
             await self.on_startup()
+        
+        # Envia automaticamente o dashboard principal no boot
+        await self.send_dashboard()
 
     def _setup_handlers(self):
-        self.app.add_handler(CommandHandler("start", self._start))
-        self.app.add_handler(CommandHandler("ajuda", self._start))
-        self.app.add_handler(CommandHandler("menu", self._start))
-        self.app.add_handler(CommandHandler("listar", self._list_projects_cmd))
-        self.app.add_handler(CommandHandler("auto_on", self._auto_on))
-        self.app.add_handler(CommandHandler("auto_off", self._auto_off))
-        self.app.add_handler(CommandHandler("status", self._status))
-        self.app.add_handler(CommandHandler("agendamentos", self._status))
-        self.app.add_handler(CommandHandler("agendamento", self._start_scheduling))
-        self.app.add_handler(CommandHandler("agendamento_retomar", self._resume_scheduling))
-        self.app.add_handler(CommandHandler("cancelar_agendamento", self._cancel_scheduling))
+        self.app.add_handler(CommandHandler("start",                 self._start))
+        self.app.add_handler(CommandHandler("ajuda",                 self._start))
+        self.app.add_handler(CommandHandler("menu",                  self._start))
+        self.app.add_handler(CommandHandler("listar",                self._list_projects_cmd))
+        self.app.add_handler(CommandHandler("auto_on",               self._auto_on))
+        self.app.add_handler(CommandHandler("auto_off",              self._auto_off))
+        self.app.add_handler(CommandHandler("status",                self._status))
+        self.app.add_handler(CommandHandler("agendamentos",          self._status))
+        self.app.add_handler(CommandHandler("agendamento",           self._start_scheduling))
+        self.app.add_handler(CommandHandler("agendamento_retomar",   self._resume_scheduling))
+        self.app.add_handler(CommandHandler("cancelar_agendamento",  self._cancel_scheduling))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 
-    # --- COMANDOS BÁSICOS E MENU ---
-    async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        welcome_text = (
-            "🚀 <b>Bem-vindo ao Maestro do AutoTube!</b> 🚀\n\n"
-            "Gerencie todos os seus canais do YouTube através deste painel de controle interativo. "
-            "Selecione uma opção:"
-        )
-        keyboard = [
-            [InlineKeyboardButton("📂 Listar Projetos da API", callback_data="menu_cmd_listar")],
-            [InlineKeyboardButton("📅 Novo Agendamento Lote", callback_data="menu_cmd_agendar")],
-            [InlineKeyboardButton("📊 Relatório de Fila & Sistema", callback_data="menu_cmd_status")],
-            [
-                InlineKeyboardButton("🤖 Ligar Auto", callback_data="menu_cmd_autoon"),
-                InlineKeyboardButton("🛑 Desligar Auto", callback_data="menu_cmd_autooff")
-            ],
-            [InlineKeyboardButton("❌ Interromper Filas", callback_data="menu_cmd_cancelar")]
-        ]
+    # ─────────────────────────────────────────
+    #  MENU PRINCIPAL
+    # ─────────────────────────────────────────
+    
+
+    def _get_dashboard_kwargs(self):
+        state = self.on_get_schedule_state() if self.on_get_schedule_state else {}
+        alert = state.get("alert")
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        msg_func = update.message.reply_text if update.message else update.callback_query.message.reply_text
-        await msg_func(welcome_text, reply_markup=reply_markup, parse_mode='HTML')
+        body = "Painel de controle dos seus canais YouTube.\n"
+        if alert:
+            body += f"\n⚠️ <b>ATENÇÃO:</b>\n{alert}\n\n"
+        body += "Escolha uma opção:"
+
+        text = _menu("🎬", "AutoTube Maestro", body)
+        kb = [
+            [InlineKeyboardButton("📂  Listar Projetos",    callback_data="menu_cmd_listar")],
+            [InlineKeyboardButton("📅  Criar Agendamento",  callback_data="menu_cmd_agendar")],
+            [InlineKeyboardButton("🗓️  Ver Agendamentos",   callback_data="menu_cmd_veragend")],
+            [InlineKeyboardButton("▶️  Retomar Pendentes",  callback_data="menu_cmd_retomar")],
+            [InlineKeyboardButton("📊  Status & Fila",      callback_data="menu_cmd_status")],
+            [
+                InlineKeyboardButton("🤖  Ligar Auto",      callback_data="menu_cmd_autoon"),
+                InlineKeyboardButton("⏹  Desligar Auto",   callback_data="menu_cmd_autooff"),
+            ],
+            [InlineKeyboardButton("🚫  Interromper Filas", callback_data="menu_cmd_cancelar")],
+        ]
+        return {"text": text, "reply_markup": InlineKeyboardMarkup(kb), "parse_mode": 'HTML'}
+
+    async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        kwargs = self._get_dashboard_kwargs()
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(**kwargs)
+        
+    async def send_dashboard(self):
+        kwargs = self._get_dashboard_kwargs()
+        try:
+            await self.app.bot.send_message(chat_id=self.chat_id, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Erro ao enviar dashboard de boot: {e}")
+
+    # ─────────────────────────────────────────
+    #  STATUS
+    # ─────────────────────────────────────────
 
     async def _status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if self.on_get_status:
-            msg_func = update.message.reply_text if update.message else update.callback_query.message.reply_text
-            await msg_func(self.on_get_status(), parse_mode='HTML')
+        if not self.on_get_status:
+            return
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(self.on_get_status(), parse_mode='HTML')
+
+    # ─────────────────────────────────────────
+    #  AUTO ON / OFF
+    # ─────────────────────────────────────────
+
+    async def _auto_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self.on_toggle_auto:
+            self.on_toggle_auto(True)
+        text = _menu("🤖", "Modo Automático", "Status: <b>ATIVADO ✅</b>")
+        kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+
+    async def _auto_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self.on_toggle_auto:
+            self.on_toggle_auto(False)
+        text = _menu("⏹", "Modo Automático", "Status: <b>DESATIVADO 🔴</b>")
+        kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
     async def _cancel_scheduling(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if self.on_cancel_scheduling:
@@ -94,336 +156,606 @@ class AutoTubeBot:
         if self.on_resume_scheduling:
             await self.on_resume_scheduling()
 
-    async def _auto_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if self.on_toggle_auto:
-            self.on_toggle_auto(True)
-            msg_func = update.message.reply_text if update.message else update.callback_query.message.reply_text
-            await msg_func("🤖 <b>Modo Automático ATIVADO.</b>", parse_mode='HTML')
+    # ─────────────────────────────────────────
+    #  VER AGENDAMENTOS
+    # ─────────────────────────────────────────
 
-    async def _auto_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if self.on_toggle_auto:
-            self.on_toggle_auto(False)
-            msg_func = update.message.reply_text if update.message else update.callback_query.message.reply_text
-            await msg_func("🛑 <b>Modo Automático DESATIVADO.</b>", parse_mode='HTML')
-
-    # --- FLUXO DE APROVAÇÃO MANUAL (LISTAR) ---
-    async def _list_projects_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self.on_list_projects: return
-        msg = update.message if update.message else update.callback_query.message
-        temporario = await msg.reply_text("⏳ Conectando à API Real Oficial...")
+    async def _view_schedules(self, update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+        if not self.on_get_schedule_state:
+            return
+            
+        state = self.on_get_schedule_state()
+        slots = state.get("slots", [])
         
+        msg = update.message if update.message else update.callback_query.message
+        
+        if not slots:
+            kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+            await msg.edit_text(
+                _menu("🗓️", "Ver Agendamentos", "Nenhum agendamento ativo ou pendente."),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+            return
+
+        per_page = 10
+        total_pages = (len(slots) + per_page - 1) // per_page
+        start_idx = page * per_page
+        page_slots = slots[start_idx:start_idx + per_page]
+
+        kb = []
+        for s in page_slots:
+            dt = datetime.fromisoformat(s['scheduled_time']).strftime("%d/%m %H:%M")
+            st = s['status']
+            if st == "agendado_api": icon = "✅"
+            elif st == "processado": icon = "📦"
+            elif st == "pendente":   icon = "⏳"
+            else:                    icon = "⚠️"
+            
+            kb.append([InlineKeyboardButton(f"{icon} {dt} - {st.upper()}", callback_data=f"vw_slot_{s['index']}_{page}")])
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Ant", callback_data=f"vw_pag_{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Próx ➡️", callback_data=f"vw_pag_{page+1}"))
+        if nav:
+            kb.append(nav)
+
+        kb.append([InlineKeyboardButton("↩️ Voltar ao Menu", callback_data="menu_cmd_voltar")])
+        
+        await msg.edit_text(
+            _menu("🗓️", f"Listagem (Pág. {page+1}/{total_pages})", f"**Total de slots:** {len(slots)}"),
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+        )
+
+    async def _view_slot_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE, index: int, page: int):
+        state = self.on_get_schedule_state()
+        slots = state.get("slots", [])
+        slot = next((s for s in slots if s['index'] == index), None)
+        
+        if not slot:
+            return await self._view_schedules(update, context, page)
+            
+        dt = datetime.fromisoformat(slot['scheduled_time']).strftime("%d/%m/%Y às %H:%M")
+        
+        text = _menu(
+            "🔎", f"Detalhe do Slot #{index}",
+            f"📅 <b>Data:</b> {dt}\n"
+            f"📊 <b>Status:</b> {slot.get('status', 'N/A')}\n"
+            f"📂 <b>Projeto:</b> {slot.get('project_id') or 'Não definido'}\n"
+            f"🔗 <b>Vídeo ID:</b> {slot.get('short_id') or 'N/A'}\n"
+            f"▶️ <b>YT ID:</b> {f'https://youtu.be/{slot.get(chr(118)+chr(105)+chr(100)+chr(101)+chr(111)+chr(95)+chr(105)+chr(100))}' if slot.get('video_id') else 'Ainda não postado'}\n"
+        )
+        
+        kb = [[InlineKeyboardButton("⬅️ Voltar pra Lista", callback_data=f"vw_pag_{page}")], [BTN_CANCEL[0]]]
+        await update.callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+
+    # ─────────────────────────────────────────
+    #  LISTAR PROJETOS
+    # ─────────────────────────────────────────
+
+    async def _list_projects_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self.on_list_projects:
+            return
+        msg = update.message if update.message else update.callback_query.message
+        loading = await msg.reply_text(
+            _menu("📂", "Listar Projetos", "⏳ Conectando à API…"),
+            parse_mode='HTML'
+        )
         try:
             projects = await asyncio.to_thread(self.on_list_projects)
         except Exception as e:
-            await temporario.edit_text(f"❌ Erro ao conectar na API: {e}")
+            await loading.edit_text(
+                _menu("❌", "Erro na API", f"Não foi possível conectar:\n<code>{e}</code>"),
+                parse_mode='HTML'
+            )
             return
-            
-        await temporario.delete()
+
+        await loading.delete()
+
         if not projects:
-            await msg.reply_text("Nenhum projeto disponível no momento.")
+            kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+            await msg.reply_text(
+                _menu("📂", "Listar Projetos", "Nenhum projeto disponível no momento."),
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode='HTML'
+            )
             return
 
         for p in projects:
             if isinstance(p, dict):
-                p_id = p.get('id')
+                p_id   = p.get('id')
                 p_name = html.escape(p.get('title') or p.get('name') or 'Sem nome')
-                kb = [[InlineKeyboardButton("🚀 Iniciar Processamento", callback_data=f"man_ch_{p_id}")]]
-                await msg.reply_text(
-                    f"📁 <b>Projeto:</b> <code>{p_name}</code>\n🆔 <b>ID:</b> <code>{p_id}</code>\n---",
-                    reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
-                )
+                text   = _menu("📁", p_name, f"ID: <code>{p_id}</code>")
+                kb     = [[InlineKeyboardButton("▶️  Iniciar Processamento", callback_data=f"man_ch_{p_id}")]]
+                await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
-    # --- FLUXO AGENDAMENTO EM LOTE (100% INLINE) ---
+    # ─────────────────────────────────────────
+    #  INÍCIO DO AGENDAMENTO
+    # ─────────────────────────────────────────
+
     async def _start_scheduling(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        self.user_data.clear() # Limpa resíduos
-        msg_text = "📅 <b>PASSO 1:</b> Quantos **dias** de frente deseja cobrir com esse lote?"
+        self.user_data.clear()
+        text = _menu(
+            "📅", "Novo Agendamento — Passo 1 de 6",
+            "Quantos <b>dias</b> deseja cobrir neste lote?"
+        )
         kb = [
-            [InlineKeyboardButton("1 Dia", callback_data="sch_days_1"), InlineKeyboardButton("3 Dias", callback_data="sch_days_3")],
-            [InlineKeyboardButton("7 Dias (Semana)", callback_data="sch_days_7"), InlineKeyboardButton("15 Dias", callback_data="sch_days_15")],
-            [InlineKeyboardButton("30 Dias", callback_data="sch_days_30")],
-            [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+            [
+                InlineKeyboardButton("1 dia",   callback_data="sch_days_1"),
+                InlineKeyboardButton("3 dias",  callback_data="sch_days_3"),
+                InlineKeyboardButton("7 dias",  callback_data="sch_days_7"),
+            ],
+            [
+                InlineKeyboardButton("15 dias", callback_data="sch_days_15"),
+                InlineKeyboardButton("30 dias", callback_data="sch_days_30"),
+            ],
+            BTN_CANCEL,
         ]
-        
-        if update.message:
-            await update.message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-        else:
-            await update.callback_query.message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
-    # --- FALLBACK TEXT MESSAGE ---
+    # ─────────────────────────────────────────
+    #  FALLBACK DE TEXTO
+    # ─────────────────────────────────────────
+
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         if text.lower().startswith('pular '):
             short_id = text.lower().replace('pular ', '').strip()
             if self.on_skip_short:
                 self.on_skip_short(short_id)
-                await update.message.reply_text(f"⏭ O clipe `{short_id}` será pulado da fila atual.", parse_mode='Markdown')
+                await update.message.reply_text(
+                    _menu("⏭", "Clipe Pulado", f"O clipe <code>{short_id}</code> foi removido da fila."),
+                    parse_mode='HTML'
+                )
             return
-            
+
+        kb = [[InlineKeyboardButton("📋  Abrir Menu", callback_data="menu_cmd_voltar")]]
         await update.message.reply_text(
-            "Oi! Essa função não usa mais chat de texto. 😊\n"
-            "Use o comando /menu para interagir através dos botões clicáveis!"
+            _menu("💡", "Use os Botões", "Este bot funciona por menus interativos."),
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode='HTML'
         )
 
-    # --- HOT CALLBACKS (BOTOES MESTRES) ---
+    # ─────────────────────────────────────────
+    #  CALLBACKS
+    # ─────────────────────────────────────────
+
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         try:
             await query.answer()
         except Exception as e:
-            self.logger.warning(f"Não foi possível responder ao callback (expirado ou inválido): {e}")
+            self.logger.warning(f"Callback expirado: {e}")
         data = query.data
 
-        # ---------------- HUB MENU ROUTES ----------------
+        # ── MENU PRINCIPAL ────────────────────────────────────────────────────
         if data.startswith("menu_cmd_"):
-            action = data.split("_")[2]
-            if action == "listar": await self._list_projects_cmd(update, context)
-            elif action == "agendar": await self._start_scheduling(update, context)
-            elif action == "status": await self._status(update, context)
-            elif action == "cancelar": await self._cancel_scheduling(update, context)
-            elif action == "autoon": await self._auto_on(update, context)
-            elif action == "autooff": await self._auto_off(update, context)
-            elif action == "cancel_flow":
+            action = data.split("_", 2)[2]
+            if   action == "listar":      await self._list_projects_cmd(update, context)
+            elif action == "agendar":     await self._start_scheduling(update, context)
+            elif action == "veragend":    await self._view_schedules(update, context, page=0)
+            elif action == "retomar":     await self._resume_scheduling(update, context)
+            elif action == "status":      await self._status(update, context)
+            elif action == "cancelar":    await self._cancel_scheduling(update, context)
+            elif action == "autoon":      await self._auto_on(update, context)
+            elif action == "autooff":     await self._auto_off(update, context)
+            elif action in ("voltar", "cancel_flow"):
                 self.user_data.clear()
-                await query.edit_message_text("❌ Operação cancelada. Voltamos pro controle manual!")
+                await self._start(update, context)
             return
 
-        # ---------------- MANUAL APPROVE WORKFLOW ----------------
+        elif data == "sch_back_1":
+            await self._start_scheduling(update, context)
+            return
+
+        # ── NAVEGAÇÃO DE LISTA ───────────────────────────────────────────────
+        elif data.startswith("vw_pag_"):
+            page = int(data.split("_")[2])
+            await self._view_schedules(update, context, page)
+            return
+
+        elif data.startswith("vw_slot_"):
+            parts = data.split("_")
+            idx = int(parts[2])
+            page = int(parts[3])
+            await self._view_slot_detail(update, context, idx, page)
+            return
+
+        # ── APROVAÇÃO MANUAL — escolha de ação ───────────────────────────────
         if data.startswith("man_ch_"):
-            # Ação de "Iniciar Processamento" no hub de listar projetos
             p_id = data.split("_")[2]
             self.user_data['man_p_id'] = p_id
+            text = _menu("📁", "Processamento de Projeto", "O que deseja fazer?")
             kb = [
-                [InlineKeyboardButton("🚀 Enviar TODOS OS VÍDEOS não postados", callback_data="man_chopt_all")],
-                [InlineKeyboardButton("🎯 Escolher um VÍDEO ESPECÍFICO", callback_data="man_chopt_one")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [InlineKeyboardButton("📤  Todos os vídeos não postados", callback_data="man_chopt_all")],
+                [InlineKeyboardButton("🎯  Escolher um vídeo específico", callback_data="man_chopt_one")],
+                BTN_CANCEL,
             ]
-            await query.edit_message_text(f"Projeto <code>{p_id}</code>.\nO que deseja fazer:", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
+        # ── APROVAÇÃO MANUAL — listar cortes ─────────────────────────────────
         elif data == "man_chopt_one":
             p_id = self.user_data.get('man_p_id')
-            if not getattr(self, "on_list_project_shorts", None):
-                await query.edit_message_text("Função offline.")
-                return
-            await query.edit_message_text("⏳ Buscando cortes do projeto...", parse_mode='HTML')
-            
+            await query.edit_message_text(
+                _menu("🎬", "Buscando Cortes", "⏳ Aguarde…"),
+                parse_mode='HTML'
+            )
             try:
                 shorts = await asyncio.to_thread(self.on_list_project_shorts, p_id)
             except Exception:
                 shorts = []
-            
-            if not shorts:
-                await query.edit_message_text("❌ Nenhum vídeo encontrado neste projeto.")
-                return
-                
-            kb = []
-            for s in shorts:
-                s_id = s.get('id')
-                s_name = html.escape(s.get('title', 'Sem titulo'))[:35]
-                kb.append([InlineKeyboardButton(f"🎬 {s_name}", callback_data=f"man_sel_{s_id}")])
-            kb.append([InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")])
-            await query.edit_message_text(f"Projeto <code>{p_id}</code>.\nSelecione o corte que deseja priorizar:", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
+            if not shorts:
+                await query.edit_message_text(
+                    _menu("📭", "Sem Vídeos", "Nenhum corte encontrado neste projeto."),
+                    reply_markup=InlineKeyboardMarkup([BTN_CANCEL]), parse_mode='HTML'
+                )
+                return
+
+            kb = [
+                [InlineKeyboardButton(f"🎬  {html.escape(s.get('title', 'Sem título'))[:40]}", callback_data=f"man_sel_{s.get('id')}")]
+                for s in shorts
+            ]
+            kb.append(BTN_CANCEL)
+            await query.edit_message_text(
+                _menu("🎬", "Escolher Vídeo", "Selecione o corte que deseja priorizar:"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+
+        # ── APROVAÇÃO MANUAL — escolher canal ────────────────────────────────
         elif data == "man_chopt_all" or data.startswith("man_sel_"):
             p_id = self.user_data.get('man_p_id')
             s_id = "all" if data == "man_chopt_all" else data.split("_")[2]
             self.user_data['man_s_id'] = s_id
-            
-            channels = self.on_list_channels()
-            kb = [[InlineKeyboardButton(f"📺 {ch}", callback_data=f"man_pr_{ch}")] for ch in channels]
-            kb.append([InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")])
-            await query.edit_message_text(f"Projeto <code>{p_id}</code> (Alvo: <code>{s_id[:8]}...</code>).\n📺 Selecione o **Canal**:", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
+            alvo = "Todos os vídeos" if s_id == "all" else f"Vídeo <code>{s_id[:10]}…</code>"
+            channels = self.on_list_channels()
+            kb = [
+                [InlineKeyboardButton(f"📺  {ch}", callback_data=f"man_pr_{ch}")]
+                for ch in channels
+            ]
+            kb.append(BTN_CANCEL)
+            await query.edit_message_text(
+                _menu("📺", "Canal de Destino", f"Alvo: {alvo}\n\nSelecione o canal:"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+
+        # ── APROVAÇÃO MANUAL — escolher estilo IA ────────────────────────────
         elif data.startswith("man_pr_"):
             ch_name = data.split("man_pr_")[1]
             self.user_data['man_ch_name'] = ch_name
             kb = [
-                [InlineKeyboardButton("🔥 Viral / Polêmico", callback_data="man_do_viral")],
-                [InlineKeyboardButton("📚 Educativo / Valor", callback_data="man_do_educativo")],
-                [InlineKeyboardButton("😂 Entretenimento", callback_data="man_do_entretenimento")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [InlineKeyboardButton("🔥  Viral / Polêmico",   callback_data="man_do_viral")],
+                [InlineKeyboardButton("📚  Educativo / Valor",  callback_data="man_do_educativo")],
+                [InlineKeyboardButton("😂  Entretenimento",     callback_data="man_do_entretenimento")],
+                BTN_CANCEL,
             ]
-            await query.edit_message_text(f"Canal escolhido: <b>{ch_name}</b>\n\n🎯 Qual **Estilo de IA** deve dominar este lote?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(
+                _menu("🎯", "Estilo de IA", f"Canal: <b>{ch_name}</b>\n\nQual estilo domina este lote?"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
+        # ── APROVAÇÃO MANUAL — confirmar e disparar ───────────────────────────
         elif data.startswith("man_do_"):
             profile = data.split("man_do_")[1]
-            p_id = self.user_data.get('man_p_id')
-            s_id = self.user_data.get('man_s_id')
+            p_id    = self.user_data.get('man_p_id')
+            s_id    = self.user_data.get('man_s_id')
             ch_name = self.user_data.get('man_ch_name')
-            
-            target_str = "TODOS OS VÍDEOS" if s_id == "all" else f"Vídeo {s_id[:8]}..."
-            await query.edit_message_text(f"✅ Execução iniciada no canal <b>{ch_name}</b> (Perfil IA: <b>{profile}</b>, Alvo: <b>{target_str}</b>)!\nConsulte `/status` para acompanhar.", parse_mode='HTML')
+            alvo    = "Todos os vídeos" if s_id == "all" else f"Vídeo {s_id[:10]}…"
+
+            kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+            await query.edit_message_text(
+                _menu(
+                    "✅", "Execução Iniciada",
+                    f"📺 Canal: <b>{ch_name}</b>\n"
+                    f"🎯 Estilo IA: <b>{profile}</b>\n"
+                    f"📦 Alvo: {alvo}\n\n"
+                    f"Use /status para acompanhar o progresso."
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
             if self.on_approve_project:
-                # Dispara async no bot_loop
                 await self.on_approve_project(p_id, ch_name, profile, s_id)
             self.user_data.clear()
 
-        # 1. Dias -> Data de Inicio
-        elif data.startswith("sch_days_"):
-            days = int(data.split("_")[2])
-            self.user_data['cfg_days'] = days
-            
-            now = datetime.now()
-            # Nomes dos dias em português
+        # ── AGENDAMENTO — PASSO 2: Data de início ────────────────────────────
+        elif data.startswith("sch_days_") or data == "sch_back_2":
+            if data.startswith("sch_days_"):
+                days = int(data.split("_")[2])
+                self.user_data['cfg_days'] = days
+            else:
+                days = self.user_data.get('cfg_days', 1)
+
+            now     = datetime.now()
             pt_days = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-            
             kb = []
-            for i in range(10):  # Oferece os próximos 10 dias
-                target_dt = now + timedelta(days=i)
-                day_name = pt_days[target_dt.weekday()]
-                date_str = target_dt.strftime("%d/%m")
-                
-                label = f"📅 {day_name} ({date_str})"
-                if i == 0: label = f"🗓️ Hoje ({day_name}, {date_str})"
-                elif i == 1: label = f"🌅 Amanhã ({day_name}, {date_str})"
-                
+            for i in range(10):
+                dt  = now + timedelta(days=i)
+                dia = pt_days[dt.weekday()]
+                fmt = dt.strftime("%d/%m")
+                if   i == 0: label = f"🗓  Hoje — {dia}, {fmt}"
+                elif i == 1: label = f"🌅  Amanhã — {dia}, {fmt}"
+                else:        label = f"📅  {dia}, {fmt}"
                 kb.append([InlineKeyboardButton(label, callback_data=f"sch_start_{i}")])
-
-            kb.append([InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")])
-            await query.edit_message_text("📅 <b>PASSO 2:</b> Quando as postagens devem iniciar?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-
-        # 2. Data -> Canal
-        elif data.startswith("sch_start_"):
-            offset = int(data.split("_")[2])
-            self.user_data['cfg_start_offset'] = offset
             
+            kb.append([
+                InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_1"),
+                InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+            ])
+
+            await query.edit_message_text(
+                _menu(
+                    "📅", "Novo Agendamento — Passo 2 de 6",
+                    f"Lote de <b>{days} dia(s)</b>.\n\nQuando as postagens devem <b>iniciar</b>?"
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+
+        # ── AGENDAMENTO — PASSO 3: Canal ─────────────────────────────────────
+        elif data.startswith("sch_start_") or data == "sch_back_3":
+            if data.startswith("sch_start_"):
+                offset = int(data.split("_")[2])
+                self.user_data['cfg_start_offset'] = offset
+
             channels = self.on_list_channels()
-            kb = [[InlineKeyboardButton(f"📺 {ch}", callback_data=f"sch_ch_{ch}")] for ch in channels]
-            kb.append([InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")])
-            await query.edit_message_text("📺 <b>PASSO 3:</b> Selecione o **Canal de Destino**:", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-
-        # 3. Canal -> IA Profile
-        elif data.startswith("sch_ch_"):
-            ch_name = data.split("_")[2]
-            self.user_data['cfg_channel'] = ch_name
-            
             kb = [
-                [InlineKeyboardButton("🔥 Viral TikTok", callback_data="sch_pr_viral")],
-                [InlineKeyboardButton("📚 Educativo", callback_data="sch_pr_educativo")],
-                [InlineKeyboardButton("😂 Entretenimento", callback_data="sch_pr_entretenimento")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [InlineKeyboardButton(f"📺  {ch}", callback_data=f"sch_ch_{ch}")]
+                for ch in channels
             ]
-            await query.edit_message_text(f"✅ Canal <b>{ch_name}</b>.\n\n🎯 <b>PASSO 4:</b> Qual **Estilo de IA**?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            kb.append([
+                InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_2"),
+                InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+            ])
+            await query.edit_message_text(
+                _menu("📺", "Novo Agendamento — Passo 3 de 6", "Selecione o <b>canal de destino</b>:"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
-        # 4. IA -> Projetos
-        elif data.startswith("sch_pr_"):
-            profile = data.split("_")[2]
-            self.user_data['cfg_profile'] = profile
-            
-            await query.edit_message_text(f"✅ Perfil <b>{profile}</b>.\n⏳ Buscando projetos na API...")
+        # ── AGENDAMENTO — PASSO 4: Estilo IA ─────────────────────────────────
+        elif data.startswith("sch_ch_") or data == "sch_back_4":
+            if data.startswith("sch_ch_"):
+                ch_name = data.split("sch_ch_")[1]
+                self.user_data['cfg_channel'] = ch_name
+            ch_name = self.user_data.get('cfg_channel', 'default')
+
+            kb = [
+                [InlineKeyboardButton("🔥  Viral TikTok",   callback_data="sch_pr_viral")],
+                [InlineKeyboardButton("📚  Educativo",      callback_data="sch_pr_educativo")],
+                [InlineKeyboardButton("😂  Entretenimento", callback_data="sch_pr_entretenimento")],
+                [
+                    InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_3"),
+                    InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+                ]
+            ]
+            await query.edit_message_text(
+                _menu(
+                    "🎯", "Novo Agendamento — Passo 4 de 6",
+                    f"Canal: <b>{ch_name}</b>\n\nQual <b>estilo de IA</b> domina este lote?"
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+
+        # ── AGENDAMENTO — PASSO 5: Projetos ──────────────────────────────────
+        elif data.startswith("sch_pr_") or data == "sch_back_5":
+            if data.startswith("sch_pr_"):
+                profile = data.split("_")[2]
+                self.user_data['cfg_profile'] = profile
+            profile = self.user_data.get('cfg_profile', 'viral')
+
+            await query.edit_message_text(
+                _menu("📂", "Buscando Projetos", "⏳ Conectando à API…"),
+                parse_mode='HTML'
+            )
             try:
                 projects = await asyncio.to_thread(self.on_list_projects)
             except Exception:
                 projects = []
-            
+
             kb = []
             if projects:
-                kb.append([InlineKeyboardButton("🌐 TODOS OS PROJETOS (Misturar)", callback_data="sch_proj_todos")])
+                kb.append([InlineKeyboardButton("🌐  Todos os projetos", callback_data="sch_proj_todos")])
                 for p in projects:
                     p_name = html.escape(p.get('title') or p.get('name') or 'Sem Nome')
-                    kb.append([InlineKeyboardButton(f"🎬 {p_name[:30]}", callback_data=f"sch_proj_{p['id']}")])
-            kb.append([InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")])
+                    kb.append([InlineKeyboardButton(f"🎬  {p_name[:38]}", callback_data=f"sch_proj_{p['id']}")])
             
-            await query.edit_message_text(f"📂 <b>PASSO 5:</b> Quais projetos deseja incluir no roteiro?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            kb.append([
+                InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_4"),
+                InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+            ])
 
-        # 5. Projetos -> Qtd Posts
-        elif data.startswith("sch_proj_"):
-            p_val = data.split("sch_proj_")[1]
-            if p_val == "todos":
-                try:
-                    all_projects = await asyncio.to_thread(self.on_list_projects)
-                    self.user_data['cfg_projects'] = [p['id'] for p in all_projects]
-                except:
-                    self.user_data['cfg_projects'] = []
-            else:
-                self.user_data['cfg_projects'] = [p_val]
-            
+            await query.edit_message_text(
+                _menu(
+                    "📂", "Novo Agendamento — Passo 5 de 6",
+                    f"Estilo IA: <b>{profile}</b>\n\nQuais projetos incluir no lote?"
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
+
+        # ── AGENDAMENTO — PASSO 6: Posts por dia ─────────────────────────────
+        elif data.startswith("sch_proj_") or data == "sch_back_6":
+            if data.startswith("sch_proj_"):
+                p_val = data.split("sch_proj_")[1]
+                if p_val == "todos":
+                    try:
+                        all_p = await asyncio.to_thread(self.on_list_projects)
+                        self.user_data['cfg_projects'] = [p['id'] for p in all_p]
+                    except Exception:
+                        self.user_data['cfg_projects'] = []
+                else:
+                    self.user_data['cfg_projects'] = [p_val]
+
             kb = [
-                [InlineKeyboardButton("1 Vídeo por Dia", callback_data="sch_qtd_1"), InlineKeyboardButton("2 Vídeos", callback_data="sch_qtd_2")],
-                [InlineKeyboardButton("3 Vídeos", callback_data="sch_qtd_3"), InlineKeyboardButton("4 Vídeos", callback_data="sch_qtd_4")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [
+                    InlineKeyboardButton("1 / dia",  callback_data="sch_qtd_1"),
+                    InlineKeyboardButton("2 / dia",  callback_data="sch_qtd_2"),
+                    InlineKeyboardButton("3 / dia",  callback_data="sch_qtd_3"),
+                    InlineKeyboardButton("4 / dia",  callback_data="sch_qtd_4"),
+                ],
+                [
+                    InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_5"),
+                    InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+                ]
             ]
-            await query.edit_message_text("⏰ <b>PASSO 6:</b> Quantos posts **por dia**?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(
+                _menu("⏰", "Novo Agendamento — Passo 6 de 6", "Quantos posts <b>por dia</b>?"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
-        # 6. Qtd Selecionada -> Template Magico
-        elif data.startswith("sch_qtd_"):
-            qtd = int(data.split("_")[2])
-            self.user_data['cfg_posts'] = qtd
-            
+        # ── AGENDAMENTO — PASSO FINAL: Horários ──────────────────────────────
+        elif data.startswith("sch_qtd_") or data == "sch_back_7":
+            if data.startswith("sch_qtd_"):
+                qtd = int(data.split("_")[2])
+                self.user_data['cfg_posts'] = qtd
+            qtd = self.user_data.get('cfg_posts', 1)
+
             kb = [
-                [InlineKeyboardButton("✅ Sim, Template Automático (Picos Youtube)", callback_data="sch_tpl_yes")],
-                [InlineKeyboardButton("⚙️ Não, Horários Manuais", callback_data="sch_tpl_no")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [InlineKeyboardButton("✨  Template automático (horários de pico)", callback_data="sch_tpl_yes")],
+                [InlineKeyboardButton("⚙️   Horários manuais",                      callback_data="sch_tpl_no")],
+                [
+                    InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_6"),
+                    InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+                ]
             ]
-            await query.edit_message_text("📈 <b>PASSO FINAL:</b> Usar a tabela mágica de engajamento do Maestro?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(
+                _menu(
+                    "📈", "Novo Agendamento — Horários",
+                    f"<b>{qtd} post(s) / dia</b>.\n\nQual estratégia de horários?"
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
-        # 6. Template
         elif data == "sch_tpl_yes":
             self.user_data['cfg_use_template'] = True
             await self._dispatch_final_schedule(query)
-            
-        elif data == "sch_tpl_no":
+
+        elif data == "sch_tpl_no" or data == "sch_back_8":
             self.user_data['cfg_use_template'] = False
             kb = [
-                [InlineKeyboardButton("08:00", callback_data="sch_hr_8"), InlineKeyboardButton("10:00", callback_data="sch_hr_10")],
-                [InlineKeyboardButton("12:00", callback_data="sch_hr_12"), InlineKeyboardButton("15:00", callback_data="sch_hr_15")],
-                [InlineKeyboardButton("18:00", callback_data="sch_hr_18"), InlineKeyboardButton("20:00", callback_data="sch_hr_20")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [
+                    InlineKeyboardButton("08:00", callback_data="sch_hr_8"),
+                    InlineKeyboardButton("10:00", callback_data="sch_hr_10"),
+                    InlineKeyboardButton("12:00", callback_data="sch_hr_12"),
+                ],
+                [
+                    InlineKeyboardButton("15:00", callback_data="sch_hr_15"),
+                    InlineKeyboardButton("18:00", callback_data="sch_hr_18"),
+                    InlineKeyboardButton("20:00", callback_data="sch_hr_20"),
+                ],
+                [
+                    InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_7"),
+                    InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+                ]
             ]
-            await query.edit_message_text("🕒 A partir de que **HORA** começar?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(
+                _menu("🕒", "Horário de Início", "A partir de que hora começar?"),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
-        # 7. Hora -> Intervalo
-        elif data.startswith("sch_hr_"):
-            hr = int(data.split("_")[2])
-            self.user_data['cfg_start_hour'] = hr
-            
+        elif data.startswith("sch_hr_") or data == "sch_back_9":
+            if data.startswith("sch_hr_"):
+                hr = int(data.split("_")[2])
+                self.user_data['cfg_start_hour'] = hr
+            hr = self.user_data.get('cfg_start_hour', 8)
+
             kb = [
-                [InlineKeyboardButton("1h de Intervalo", callback_data="sch_int_1"), InlineKeyboardButton("2h de Intervalo", callback_data="sch_int_2")],
-                [InlineKeyboardButton("4h de Intervalo", callback_data="sch_int_4"), InlineKeyboardButton("6h de Intervalo", callback_data="sch_int_6")],
-                [InlineKeyboardButton("❌ Cancelar", callback_data="menu_cmd_cancel_flow")]
+                [
+                    InlineKeyboardButton("1h",  callback_data="sch_int_1"),
+                    InlineKeyboardButton("2h",  callback_data="sch_int_2"),
+                    InlineKeyboardButton("4h",  callback_data="sch_int_4"),
+                    InlineKeyboardButton("6h",  callback_data="sch_int_6"),
+                ],
+                [
+                    InlineKeyboardButton("⬅️  Voltar", callback_data="sch_back_8"),
+                    InlineKeyboardButton("✖️  Cancelar", callback_data="menu_cmd_cancel_flow")
+                ]
             ]
-            await query.edit_message_text("⏳ Qual o intervalo (em horas) entre cada vídeo diário?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+            await query.edit_message_text(
+                _menu(
+                    "⏳", "Intervalo entre Vídeos",
+                    f"Início às <b>{hr:02d}:00</b>.\n\nQual o intervalo entre cada vídeo?"
+                ),
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+            )
 
-        # 8. Intervalo Final
         elif data.startswith("sch_int_"):
             interval = int(data.split("_")[2])
             self.user_data['cfg_interval'] = interval
             await self._dispatch_final_schedule(query)
 
+    # ─────────────────────────────────────────
+    #  DISPATCH FINAL DO AGENDAMENTO
+    # ─────────────────────────────────────────
+
     async def _dispatch_final_schedule(self, query):
-        if self.on_start_scheduling:
-            await query.edit_message_text("✅ <b>O Maestro montou o Roteiro!</b>\nAguarde o processamento em background...", parse_mode='HTML')
-            
-            # Formata config
-            cfg = {
-                "days": self.user_data.get('cfg_days', 7),
-                "posts_per_day": self.user_data.get('cfg_posts', 1),
-                "start_hour": self.user_data.get('cfg_start_hour', 0),
-                "interval_hours": self.user_data.get('cfg_interval', 0),
-                "custom_hours": None,
-                "use_template": self.user_data.get('cfg_use_template', False),
-                "start_date_offset": self.user_data.get('cfg_start_offset', 0),
-                "projects": self.user_data.get('cfg_projects', []),
-                "channel_name": self.user_data.get('cfg_channel'),
-                "profile_name": self.user_data.get('cfg_profile', 'viral')
-            }
-            self.user_data.clear()
-            await self.on_start_scheduling(cfg)
+        if not self.on_start_scheduling:
+            return
+
+        cfg = {
+            "days":              self.user_data.get('cfg_days', 7),
+            "posts_per_day":     self.user_data.get('cfg_posts', 1),
+            "start_hour":        self.user_data.get('cfg_start_hour', 0),
+            "interval_hours":    self.user_data.get('cfg_interval', 0),
+            "custom_hours":      None,
+            "use_template":      self.user_data.get('cfg_use_template', False),
+            "start_date_offset": self.user_data.get('cfg_start_offset', 0),
+            "projects":          self.user_data.get('cfg_projects', []),
+            "channel_name":      self.user_data.get('cfg_channel'),
+            "profile_name":      self.user_data.get('cfg_profile', 'viral'),
+        }
+        self.user_data.clear()
+
+        days    = cfg['days']
+        posts   = cfg['posts_per_day']
+        channel = cfg['channel_name'] or '—'
+        profile = cfg['profile_name']
+        total   = days * posts
+        horario = "Horários de pico automáticos" if cfg['use_template'] \
+                  else f"Início {cfg['start_hour']:02d}:00 · intervalo {cfg['interval_hours']}h"
+
+        kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+        await query.edit_message_text(
+            _menu(
+                "✅", "Agendamento Criado",
+                f"📺 Canal: <b>{channel}</b>\n"
+                f"🎯 Estilo IA: <b>{profile}</b>\n"
+                f"📅 Duração: <b>{days} dia(s)</b> · <b>{posts}/dia</b> · <b>{total} vídeos</b>\n"
+                f"🕒 {horario}\n\n"
+                f"O Maestro está montando o roteiro.\n"
+                f"Use /status para acompanhar."
+            ),
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML'
+        )
+        await self.on_start_scheduling(cfg)
+
+    # ─────────────────────────────────────────
+    #  NOTIFICAÇÕES
+    # ─────────────────────────────────────────
 
     async def send_notification(self, message: str, reply_markup=None):
         try:
             try:
-                await self.app.bot.send_message(chat_id=self.chat_id, text=message, reply_markup=reply_markup, parse_mode='HTML')
+                await self.app.bot.send_message(
+                    chat_id=self.chat_id, text=message,
+                    reply_markup=reply_markup, parse_mode='HTML'
+                )
             except Exception:
-                await self.app.bot.send_message(chat_id=self.chat_id, text=message, reply_markup=reply_markup)
+                await self.app.bot.send_message(
+                    chat_id=self.chat_id, text=message, reply_markup=reply_markup
+                )
         except Exception as e:
             self.logger.error(f"Erro ao enviar notificação: {e}")
 
     async def send_photo(self, photo_url: str, caption: str, reply_markup=None):
         try:
-            await self.app.bot.send_photo(chat_id=self.chat_id, photo=photo_url, caption=caption, reply_markup=reply_markup, parse_mode='HTML')
+            await self.app.bot.send_photo(
+                chat_id=self.chat_id, photo=photo_url,
+                caption=caption, reply_markup=reply_markup, parse_mode='HTML'
+            )
         except Exception:
             await self.send_notification(caption, reply_markup=reply_markup)
 
     def run(self):
-        self.logger.info("Bot do Telegram iniciado fluídico multi-canal...")
+        self.logger.info("AutoTube Maestro iniciado.")
         self.app.run_polling()
