@@ -3,6 +3,7 @@ import logging
 import time
 import schedule
 import sys
+import os
 from threading import Thread
 
 # Força o console do Windows a aceitar emojis (UTF-8) para evitar crash de UnicodeEncodeError no logging
@@ -87,10 +88,18 @@ class AutoTubeSystem:
         except Exception as e:
             self.logger.error(f"Erro ao agendar processamento manual: {e}")
 
-    def toggle_auto(self, status: bool):
+    def toggle_auto(self, status: bool, interval_hours: int = 1):
         """Ativa/Desativa o modo automático."""
         self.auto_mode = status
-        self.logger.info(f"Modo Automático: {'Ativado' if status else 'Desativado'}")
+        
+        import schedule
+        schedule.clear('autojob')
+        
+        if status:
+            schedule.every(interval_hours).hours.tag('autojob').do(self.run_auto_job)
+            self.logger.info(f"🤖 Modo Automático: Ativado (Frequência: {interval_hours}h)")
+        else:
+            self.logger.info("⏹ Modo Automático: Desativado")
 
     def run_auto_job(self):
         """Tarefa periódica para buscar novos projetos no modo automático."""
@@ -146,10 +155,43 @@ class AutoTubeSystem:
             self.logger.info("⏳ Slot atingiu horário de retomada automática. Reativando fila em background.")
             asyncio.run_coroutine_threadsafe(self.pipeline.resume_scheduling(), self.bot_loop)
 
+    def cleanup_downloads_folder(self):
+        """Varre a pasta downloads/ e apaga vídeos mortos/abandonados com mais de 24h devido a falhas críticas."""
+        self.logger.info("🧹 [GC] Iniciando varredura da lixeira na pasta de downloads...")
+        try:
+            download_dir = self.settings.DOWNLOAD_PATH
+            if not os.path.exists(download_dir):
+                return
+                
+            current_time = time.time()
+            cutoff_time = current_time - (24 * 3600)  # 24 horas atrás
+            cleaned = 0
+            
+            for filename in os.listdir(download_dir):
+                if filename.endswith(".mp4"):
+                    filepath = os.path.join(download_dir, filename)
+                    if os.path.getmtime(filepath) < cutoff_time:
+                        try:
+                            os.remove(filepath)
+                            cleaned += 1
+                        except Exception as file_e:
+                            self.logger.warning(f"🧹 Falha ao limpar resíduo {filename}: {file_e}")
+                            
+            if cleaned > 0:
+                self.logger.info(f"🧹 [GC] Sucesso: {cleaned} vídeos mortos deletados definitivamente do disco.")
+        except Exception as e:
+            self.logger.error(f"Erro no Garbage Collector: {e}")
+
     def start_scheduler(self):
         """Inicia o agendador de tarefas."""
-        schedule.every(self.settings.CRON_INTERVAL).minutes.do(self.run_auto_job)
+        if self.auto_mode:
+            schedule.every(self.settings.CRON_INTERVAL).minutes.tag('autojob').do(self.run_auto_job)
+            
         schedule.every(15).minutes.do(self.check_pending_resume)
+        
+        # Roda o GC de downloads na inicialização e depois de 6 em 6 horas
+        self.cleanup_downloads_folder()
+        schedule.every(6).hours.do(self.cleanup_downloads_folder)
         
         while True:
             schedule.run_pending()

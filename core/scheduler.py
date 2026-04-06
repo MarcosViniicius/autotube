@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import uuid
@@ -20,16 +21,18 @@ class SchedulingManager:
         self.state_file = state_file
         self.log_file = log_file
         self.logger = logging.getLogger("SchedulingManager")
+        self._lock = threading.Lock()
         self.state = self._load_state()
 
     def _load_state(self) -> Dict:
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                self.logger.error(f"Erro ao carregar estado de agendamento: {e}")
-        return {}
+        with self._lock:
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception as e:
+                    self.logger.error(f"Erro ao carregar estado de agendamento: {e}")
+            return {}
 
     def save_state(self, session_id: str, config: Dict, slots: List[Dict]):
         """Salva um novo estado completo."""
@@ -54,11 +57,12 @@ class SchedulingManager:
             self._persist()
 
     def _persist(self):
-        try:
-            with open(self.state_file, 'w', encoding='utf-8') as f:
-                json.dump(self.state, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            self.logger.error(f"Erro ao persistir estado: {e}")
+        with self._lock:
+            try:
+                with open(self.state_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.state, f, indent=4, ensure_ascii=False)
+            except Exception as e:
+                self.logger.error(f"Erro ao salvar estado de agendamento: {e}")
 
     def log_alert(self, message: str):
         self.state["alert"] = message

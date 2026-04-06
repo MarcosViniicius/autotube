@@ -181,7 +181,7 @@ class AutoTubePipeline:
 
             if not short_to_process:
                 self.scheduler.log_error(slot_idx, slot['scheduled_time'], "N/A", "despacho", f"Nenhum clipe disponível no projeto {selected_projects[project_index-1]}")
-                self.scheduler.update_slot(slot_idx, {"status": "pendente_log"})
+                self.scheduler.update_slot(slot_idx, {"status": "sem_conteudo"})
                 slots_skipped += 1
                 continue
 

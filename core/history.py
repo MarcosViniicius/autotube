@@ -1,33 +1,37 @@
 import json
 import os
 import logging
+import threading
 from typing import List, Set
 
 class HistoryManager:
     def __init__(self, history_file: str = "history.json"):
         self.history_file = history_file
         self.logger = logging.getLogger("HistoryManager")
+        self._lock = threading.Lock()
         self.processed_ids: Set[str] = self._load_history()
 
     def _load_history(self) -> Set[str]:
         """Carrega os IDs processados do arquivo JSON."""
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return set(data)
-            except Exception as e:
-                self.logger.error(f"Erro ao carregar histórico: {e}")
-        return set()
+        with self._lock:
+            if os.path.exists(self.history_file):
+                try:
+                    with open(self.history_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if isinstance(data, list):
+                            return set(data)
+                except Exception as e:
+                    self.logger.error(f"Erro ao carregar histórico: {e}")
+            return set()
 
     def _save_history(self):
         """Salva a lista atual de IDs no arquivo JSON."""
-        try:
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(list(self.processed_ids), f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            self.logger.error(f"Erro ao salvar histórico: {e}")
+        with self._lock:
+            try:
+                with open(self.history_file, 'w', encoding='utf-8') as f:
+                    json.dump(list(self.processed_ids), f, indent=4, ensure_ascii=False)
+            except Exception as e:
+                self.logger.error(f"Erro ao salvar histórico: {e}")
 
     def is_processed(self, item_id: str) -> bool:
         """Verifica se um ID já foi processado."""

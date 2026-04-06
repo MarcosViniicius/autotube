@@ -64,7 +64,8 @@ class AutoTubeBot:
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start",                 self._start))
-        self.app.add_handler(CommandHandler("ajuda",                 self._start))
+        self.app.add_handler(CommandHandler("help",                  self._help_command))
+        self.app.add_handler(CommandHandler("ajuda",                 self._help_command))
         self.app.add_handler(CommandHandler("menu",                  self._start))
         self.app.add_handler(CommandHandler("listar",                self._list_projects_cmd))
         self.app.add_handler(CommandHandler("auto_on",               self._auto_on))
@@ -86,10 +87,15 @@ class AutoTubeBot:
         state = self.on_get_schedule_state() if self.on_get_schedule_state else {}
         alert = state.get("alert")
         
-        body = "Painel de controle dos seus canais YouTube.\n"
+        body = "Painel de controle dos seus canais YouTube.\n\n"
+        body += "<i>Escolha uma opção abaixo:</i>\n\n"
+        body += "📂 <b>Listar Projetos:</b> Ver vídeos cru da API e enviá-los manualmente.\n"
+        body += "📅 <b>Criar Agendamento:</b> IA empacota múltiplos vídeos e programa todos os dias automaticamente.\n"
+        body += "🗓️ <b>Ver Agendamentos:</b> Fiscalizar o status e data dos vídeos recém criados.\n"
+        body += "▶️ <b>Retomar Pendentes:</b> Forçar upload dos projetos que caíram na malha da cota diária.\n"
+        
         if alert:
             body += f"\n⚠️ <b>ATENÇÃO:</b>\n{alert}\n\n"
-        body += "Escolha uma opção:"
 
         text = _menu("🎬", "AutoTube Maestro", body)
         kb = [
@@ -105,6 +111,21 @@ class AutoTubeBot:
             [InlineKeyboardButton("🚫  Interromper Filas", callback_data="menu_cmd_cancelar")],
         ]
         return {"text": text, "reply_markup": InlineKeyboardMarkup(kb), "parse_mode": 'HTML'}
+
+    async def _help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        help_text = (
+            "📖 <b>Manual Prático AutoTube</b>\n\n"
+            "Sou o seu assistente de automação. Aqui vão dicas de uso:\n\n"
+            "<b>1. Envio Manual vs Agendamento</b>\n"
+            "Em 'Listar Projetos' você aprova vídeos manualmente, um a um. Em 'Criar Agendamento' você gera dezenas de vídeos com IA configurada.\n\n"
+            "<b>2. Alertas de Quota</b>\n"
+            "O YouTube possui limite de uploads. Se travar, não se preocupe! Retomamos automaticamente no outro dia, ou clique em 'Retomar Pendentes'.\n\n"
+            "<b>3. Modo Auto</b>\n"
+            "Ligar a Automação faz o sistema buscar shorts infinitamente a cada hora. Desligue se quiser gerir pacotes de vídeos com cuidado.\n\n"
+            "Comandos rápidos: /menu, /status."
+        )
+        send = update.message.reply_text if update.message else update.callback_query.message.reply_text
+        await send(help_text, parse_mode='HTML')
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         kwargs = self._get_dashboard_kwargs()
@@ -133,16 +154,32 @@ class AutoTubeBot:
     # ─────────────────────────────────────────
 
     async def _auto_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if self.on_toggle_auto:
-            self.on_toggle_auto(True)
-        text = _menu("🤖", "Modo Automático", "Status: <b>ATIVADO ✅</b>")
-        kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+        text = _menu("🤖", "Configuração da Automação", "A cada quantas <b>horas</b> o bot deve varrer os projetos procurando shorts para postar?")
+        kb = [
+            [
+                InlineKeyboardButton("1 Hora", callback_data="auto_interval_1"),
+                InlineKeyboardButton("2 Horas", callback_data="auto_interval_2"),
+                InlineKeyboardButton("3 Horas", callback_data="auto_interval_3"),
+            ],
+            [
+                InlineKeyboardButton("4 Horas", callback_data="auto_interval_4"),
+                InlineKeyboardButton("6 Horas", callback_data="auto_interval_6"),
+                InlineKeyboardButton("12 Horas", callback_data="auto_interval_12"),
+            ],
+            [
+                InlineKeyboardButton("24 Horas", callback_data="auto_interval_24"),
+            ],
+            BTN_CANCEL
+        ]
         send = update.message.reply_text if update.message else update.callback_query.message.reply_text
-        await send(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        if update.callback_query and update.message is None: # fix for edit message
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        else:
+            await send(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
     async def _auto_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if self.on_toggle_auto:
-            self.on_toggle_auto(False)
+            self.on_toggle_auto(False, 1)
         text = _menu("⏹", "Modo Automático", "Status: <b>DESATIVADO 🔴</b>")
         kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
         send = update.message.reply_text if update.message else update.callback_query.message.reply_text
@@ -348,6 +385,16 @@ class AutoTubeBot:
 
         elif data == "sch_back_1":
             await self._start_scheduling(update, context)
+            return
+
+        # ── CONFIGURAÇÃO DE AUTO MODE ─────────────────────────────────────────
+        elif data.startswith("auto_interval_"):
+            interval = int(data.split("_")[2])
+            if self.on_toggle_auto:
+                self.on_toggle_auto(True, interval)
+            text = _menu("🤖", "Modo Automático", f"Status: <b>ATIVADO ✅</b>\n\nVarreduras programadas a cada: <b>{interval} hora(s)</b>.")
+            kb = [[InlineKeyboardButton("↩️  Voltar ao Menu", callback_data="menu_cmd_voltar")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
             return
 
         # ── NAVEGAÇÃO DE LISTA ───────────────────────────────────────────────
